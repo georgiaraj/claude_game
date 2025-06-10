@@ -275,7 +275,7 @@ class GameSession:
         self.players[player.name] = player
 
         if player.type == "claude":
-            claude_player = ClaudePlayer(claude_api_key)
+            claude_player = ClaudePlayer(claude_api_key, verbose=True)
             claude_player.personality = player.strategy
             self.claude_players[player.name] = claude_player
 
@@ -465,7 +465,99 @@ class TicTacToe(CompetitiveGame):
             if i < 2:
                 description += "---------\n"
 
+        description += "\nPossible winning lines:\n"
+        for line in self.lines:
+            description += " - " + ", ".join(line) + "\n"
+
         return description
+
+
+class Squares(CompetitiveGame):
+
+    """Squares game implementation"""
+    def __init__(self, game_config: Dict[str, Any], num_squares: int = 4):
+        super().__init__(game_config)
+        self.num_squares = num_squares):
+
+    def _valid_position(self, position: Tuple[int, int, str]) -> bool:
+        """Check if the position is valid for placing a square"""
+        if len(position) != 3:
+            return False
+        row, col, direction = position
+        if not (0 <= row < self.num_squares and 0 <= col < self.num_squares):
+            return False
+        if direction not in ['down', 'right']:
+            return False
+        return True
+
+    def setup_game(self, players: List[Player]) -> Dict[str, Any]:
+        if len(players) != 2:
+            raise ValueError("Squares requires exactly 2 players")
+
+        self.state.phase = GamePhase.PLAYING
+        self.state.players = {p.name: p for p in players}
+        self.state.current_player = players[0].name
+
+        # Initialize 10x10 board
+        self.state.board = {({i},{j},{k}): 0 for i in range(self.num_squares)
+                            for j in range(self.num_squares) for k in ['down', 'right']}}
+        self.state.boxes = {(i, j): None for i in range(self.num_squares)
+                            for j in range(self.num_squares)}
+
+        return {"message": "Game started!"}
+
+    def get_valid_moves(self, player: str) -> List[Dict[str, Any]]:
+        if self.state.phase != GamePhase.PLAYING:
+            return []
+
+        valid_moves = []
+        for position, value in self.state.board.items():
+            if value == 0:
+                row, col, direction = position
+                valid_moves.append({
+                    "action": "place",
+                    "data": {"position": position, "row": row, "col": col, "direction": direction}
+                })
+
+        return valid_moves
+
+    def apply_move(self, move: GameMove) -> Dict[str, Any]:
+        if move.action != "place":
+            return {"error": "Invalid action"}
+
+        position = move.data.get("position")
+        if not position or not self._valid_position(position) \
+           or self.state.board.get(position) != 0:
+            return {"error": "Invalid position"}
+
+        # Place the value
+        self.state.board[position] = 1
+
+        # Update scores if a square is completed
+        # Check surrounding cells to see if a square is completed
+        row, col, direction = position
+        if direction == 'down':
+            # Check squares either side of the vertical line
+            if self.state.boxes((row, col)) is None and \
+               self.state.board.get((row, col, 'right'), 0) == 1 and \
+               self.state.board.get((row + 1, col, 'right'), 0) == 1 and \
+               self.state.board.get((row, col, 'down'), 0) == 1 and \
+               self.state.board.get((row + 1, col, 'down'), 0) == 1):
+                # Square completed
+                player_name = self.state.current_player
+                self.state.boxes[(row, col)] = player_name
+            # TODO Add other options
+
+    def check_win_condition(self) -> Optional[Dict[str, Any]]:
+        # Check if all squares are completed
+        if all(value is not None for value in self.state.boxes.values()):
+            self.state.phase = GamePhase.FINISHED
+            scores = {player: sum(1 for box in self.state.boxes.values() if box == player)
+                      for player in self.state.players.keys()}
+            winner = max(scores, key=scores.get)
+            return {"winner": winner, "scores": scores, "method": "all_squares_completed"}
+
+        return None
 
 
 # Example usage and testing
