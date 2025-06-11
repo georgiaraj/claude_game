@@ -199,8 +199,7 @@ class ClaudePlayer(Player):
             # Parse Claude's strategic decision
             decision = self._parse_claude_response(response.content[0].text, valid_moves)
 
-            if self.verbose:
-                print(f"Claude's decision: {decision}")
+            print(f"Claude's decision: {decision}")
 
             return GameMove(
                 player=player_name,
@@ -323,7 +322,7 @@ class GameSession:
         if player_type == "claude":
             claude_player = ClaudePlayer(name=name, claude_api_key=claude_api_key,
                                          strategy=strategy, skill_level=skill_level,
-                                         verbose=True)
+                                         verbose=False)
             self.players[name] = claude_player
         elif player_type == "human":
             human_player = HumanPlayer(name=name)
@@ -660,11 +659,11 @@ class Squares(CompetitiveGame):
         row, col, direction = position
         if direction == 'down':
             # Check squares either side of the vertical line
-            repeat = _check_and_set_square_completion(row, col) or \
+            repeat = (col < self.num_squares and _check_and_set_square_completion(row, col)) or \
                 (col > 0 and _check_and_set_square_completion(row, col-1))
         elif direction == 'right':
             # Check squares either side of the horizontal line
-            repeat = _check_and_set_square_completion(row, col) or \
+            repeat = (row < self.num_squares and _check_and_set_square_completion(row, col)) or \
                 (row > 0 and _check_and_set_square_completion(row-1, col))
 
         return ({"success": True, "placed": 1, "position": position}, repeat)
@@ -702,7 +701,7 @@ class Squares(CompetitiveGame):
                 if board.get((i, j, 'down'), 0) == 1:
                     description += "|    "
                 else:
-                    description += "    "
+                    description += "     "
             description += "\n"
 
         description += "\nBoxes:\n"
