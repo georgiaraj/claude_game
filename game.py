@@ -1,4 +1,4 @@
-import pdb
+import copy
 import anthropic
 import json
 import random
@@ -15,11 +15,16 @@ class GamePhase(Enum):
 
 class Player:
     """Represents a player in the game"""
-    def __init__(self, name: str, player_type: str, **kwargs):
+    def __init__(self, name: str, **kwargs):
         self.name = name
-        self.type = player_type  # "claude", "human", "ai", "random"
-        self.stats = kwargs.get('stats', {})
-        self.strategy = kwargs.get('strategy', 'balanced')
+
+    def make_move(self, game: 'CompetitiveGame', player_name: str) -> 'GameMove':
+        """Make a move in the game, to be implemented by subclasses"""
+        raise NotImplementedError("Subclasses must implement make_move method")
+
+    @property
+    def type(self) -> str:
+        raise NotImplementedError("Subclasses must implement type property")
 
 class GameMove:
     """Represents a move in the game"""
@@ -57,7 +62,7 @@ class GameState:
         return {
             "phase": self.phase.value,
             "current_player": self.current_player,
-            "players": {name: {"name": p.name, "type": p.type, "stats": p.stats} for name, p in self.players.items()},
+            "players": {name: {"name": name, "type": p.type} for name, p in self.players.items()},
             "board": self.board,
             "scores": self.scores,
             "move_history": [move.to_dict() for move in self.move_history],
@@ -131,18 +136,39 @@ class CompetitiveGame(ABC):
         return self.state.to_dict()
 
 
+class HumanPlayer(Player):
+    """Human player that interacts through console input"""
+
+    def make_move(self, game: CompetitiveGame, player_name: str) -> GameMove:
+        """Human player makes a move based on console input"""
+        while True:
+            try:
+                move_input = input(f"{player_name}, enter your move ({game.get_move_description()}): \n").strip().split(',')
+                print(f"Received input: {move_input}")
+                return GameMove(player=player_name, action="place",
+                                data={"position": move_input})
+            except ValueError:
+                print("Invalid input! Please ensure you use the correct move format.")
+
+    @property
+    def type(self) -> str:
+        """Return player type"""
+        return "human"
+
+
 class ClaudePlayer(Player):
     """Claude AI player that makes strategic decisions"""
 
-    def __init__(self, api_key: str = None, model: str = "claude-sonnet-4-20250514",
-                 verbose=False, **kwargs):
-        super().__init__(name="Claude", player_type="claude", **kwargs)
+    def __init__(self, name: str = 'Claude', api_key: str = None,
+                 model: str = "claude-sonnet-4-20250514", strategy: str = "competitive",
+                 skill_level: str = 'intermediate', verbose=False, **kwargs):
+        super().__init__(name=name, **kwargs)
         self.client = anthropic.Anthropic(
             api_key=api_key or os.getenv('ANTHROPIC_API_KEY')
         )
         self.model = model
-        self.personality = "competitive"  # competitive, friendly, aggressive, defensive
-        self.skill_level = "expert"  # beginner, intermediate, expert
+        self.personality = strategy  # competitive, friendly, aggressive, defensive
+        self.skill_level = skill_level  # beginner, intermediate, expert
         self.verbose = verbose
 
     def make_move(self, game: CompetitiveGame, player_name: str) -> GameMove:
@@ -277,6 +303,11 @@ class ClaudePlayer(Player):
         # Final fallback
         return {"action": "pass", "data": {}}
 
+    @property
+    def type(self) -> str:
+        """Return player type"""
+        return "claude"
+
 
 class GameSession:
     """Manages a competitive game session between players"""
@@ -284,17 +315,21 @@ class GameSession:
     def __init__(self, game: CompetitiveGame):
         self.game = game
         self.players = {}
-        self.claude_players = {}
         self.move_log = []
 
-    def add_player(self, player: Player, claude_api_key: str = None):
+    def add_player(self, name: str, player_type: str, claude_api_key: str = None,
+                   strategy: str = "competitive", skill_level: str = "intermediate"):
         """Add a player to the game"""
-        self.players[player.name] = player
-
-        if player.type == "claude":
-            claude_player = ClaudePlayer(claude_api_key, verbose=True)
-            claude_player.personality = player.strategy
-            self.claude_players[player.name] = claude_player
+        if player_type == "claude":
+            claude_player = ClaudePlayer(name=name, claude_api_key=claude_api_key,
+                                         strategy=strategy, skill_level=skill_level,
+                                         verbose=True)
+            self.players[name] = claude_player
+        elif player_type == "human":
+            human_player = HumanPlayer(name=name)
+            self.players[name] = human_player
+        else:
+            raise ValueError(f"Unsupported player type: {player.type}")
 
     def start_game(self) -> Dict[str, Any]:
         """Start the competitive game"""
@@ -310,6 +345,7 @@ class GameSession:
     def play_turn(self) -> List[Dict[str, Any]]:
         """Play one turn of the game, may include multiple moves"""
         current_player = self.game.state.current_player
+        print(self.game.get_game_description())
 
         if not current_player:
             return {"error": "No current player set"}
@@ -320,11 +356,19 @@ class GameSession:
 
         results = []
         while repeat:
+
             # Get the move
             move = player.make_move(self.game, current_player)
 
             # Apply the move
-            move_result, repeat = self.game.apply_move(move)
+            try:
+                move_result, repeat = self.game.apply_move(move)
+                print(self.game.get_game_description())
+
+            except Exception as e:
+                print(f"Error applying move: {e}")
+                continue
+
             self.move_log.append(move)
 
             # Check win condition
@@ -343,10 +387,16 @@ class GameSession:
             results[-1]["game_over"] = True
             results[-1]["winner"] = win_check
 
-        self.game.
+        self.change_player_turn()
 
         return results
 
+    def change_player_turn(self):
+        """Switch to the next player"""
+        players = list(self.game.state.players.keys())
+        current_idx = players.index(self.game.state.current_player)
+        next_idx = (current_idx + 1) % len(players)
+        self.game.state.current_player = players[next_idx]
 
 # Example Game Implementation: Tic-Tac-Toe
 class TicTacToe(CompetitiveGame):
@@ -416,13 +466,13 @@ class TicTacToe(CompetitiveGame):
 
         return valid_moves
 
-    def apply_move(self, move: GameMove) -> Dict[str, Any]:
+    def apply_move(self, move: GameMove) -> (Dict[str, Any], bool):
         if move.action != "place":
-            return {"error": "Invalid action"}
+            raise ValueError("Invalid action for Tic-Tac-Toe")
 
         position = move.data.get("position")
         if not position or self.state.board.get(position) != "":
-            return {"error": "Invalid position"}
+            raise ValueError(f"Invalid position: {position}. Selected position must be empty.")
 
         # Place the symbol
         symbol = self.state.game_data[move.player]
@@ -499,23 +549,19 @@ class Squares(CompetitiveGame):
 
     def _valid_position(self, position: Tuple[int, int, str]) -> bool:
         """Check if the position is valid for placing a square"""
-        if len(position) != 3:
-            return False
-        row, col, direction = position
-        if not (0 <= row < self.num_squares and 0 <= col < self.num_squares):
-            return False
-        if direction not in ['down', 'right']:
-            return False
-        return True
+        return position in self.state.board
 
     def _check_square_completion(self, row: int, col: int) -> bool:
         """Check if placing a line completes a square"""
         # Check if the square at (row, col) is completed
-        return (self.state.boxes.get((row, col)) is None and
-                self.state.board.get((row, col, 'down'), 0) == 1 and
-                self.state.board.get((row, col, 'right'), 0) == 1 and
-                self.state.board.get((row + 1, col, 'right'), 0) == 1 and
-                self.state.board.get((row, col + 1, 'down'), 0) == 1)
+        try:
+            return (self.state.boxes[(row, col)] is None and
+                    self.state.board[(row, col, 'down')] == 1 and
+                    self.state.board[(row, col, 'right')] == 1 and
+                    self.state.board[(row + 1, col, 'right')] == 1 and
+                    self.state.board[(row, col + 1, 'down')] == 1)
+        except KeyError:
+            raise ValueError(f"Invalid square position: ({row}, {col}). ")
 
     def get_rules(self) -> str:
         """Get the rules of the Squares game"""
@@ -538,12 +584,13 @@ class Squares(CompetitiveGame):
         self.state.current_player = players[0].name
 
         # Initialize the board and boxes
-        self.state.board = {(i,j,k): 0 for i in range(self.num_squares+1)
-                            for j in range(self.num_squares+1) for k in ['down', 'right']}
+        self.state.board = {(i,j,k): 0 for i in range(self.num_squares)
+                            for j in range(self.num_squares) for k in ['down', 'right']}
+        # Add last row and column for squares
+        self.state.board.update({(i,self.num_squares,'down'): 0 for i in range(self.num_squares)})
+        self.state.board.update({(self.num_squares,j,'right'): 0 for j in range(self.num_squares)})
         self.state.boxes = {(i, j): None for i in range(self.num_squares)
                             for j in range(self.num_squares)}
-
-        pdb.set_trace()
 
         return {"message": "Game started!"}
 
@@ -552,8 +599,9 @@ class Squares(CompetitiveGame):
         return f"""
         To make a move, enter the position in the format: row,col,direction
         where 'direction' is either 'down' or 'right'.
-        Example: '1,2,right' places a line to the right of cell (1,2).
-        Valid positions are from 0,0 (top-left) to {self.num_squares-1},{self.num_squares-1} (bottom-right).
+        Example: '1,2,right' places a line going right from the point (1,2).
+        Valid positions are from 0,0,('down'|'right') (top-left) to {self.num_squares},{self.num_squares-1},'right' or {self.num_squares-1},{self.num_squares},'down' (lines that will join to the bottom right.
+        Note that the last row and column points will only accept 'right' and 'down' respectively.
         """
 
     def get_valid_moves(self, player: str) -> List[Dict[str, Any]]:
@@ -562,7 +610,6 @@ class Squares(CompetitiveGame):
 
         valid_moves = []
         for position, value in self.state.board.items():
-            pdb.set_trace()
             if value == 0:
                 row, col, direction = position
                 valid_moves.append({
@@ -572,14 +619,25 @@ class Squares(CompetitiveGame):
 
         return valid_moves
 
-    def apply_move(self, move: GameMove) -> Dict[str, Any]:
+    def apply_move(self, move: GameMove) -> (Dict[str, Any], bool):
         if move.action != "place":
-            return {"error": "Invalid action"}
+            raise ValueError("Invalid action for Squares game")
 
-        position = move.data.get("position")
-        if not position or not self._valid_position(position) \
-           or self.state.board.get(position) != 0:
-            return {"error": "Invalid position"}
+        try:
+            position = move.data.get("position")
+            # Convert to int,int,str tuple
+            position = (int(position[0]), int(position[1]), position[2])
+        except ValueError:
+            raise ValueError("Invalid position format. Use: row,col,direction")
+
+        print(f"Applying move at position: {position}")
+
+        try:
+            if self.state.board[position] != 0:
+                raise ValueError(f"Invalid position: {position}. Selected position must be empty "
+                                 f" but position {position} already set {self.state.board['position']}.")
+        except KeyError:
+            raise ValueError(f"Invalid position: {position}. Position does not exist on the board.")
 
         # Place the value
         self.state.board[position] = 1
@@ -597,15 +655,17 @@ class Squares(CompetitiveGame):
 
         # Update scores if a square is completed
         # Check surrounding cells to see if a square is completed
+        # Note we have already checked that the position is valid
+        # So can not have 'right' or 'down' in the last col or row respectively
         row, col, direction = position
         if direction == 'down':
             # Check squares either side of the vertical line
             repeat = _check_and_set_square_completion(row, col) or \
-                _check_and_set_square_completion(row, col-1)
+                (col > 0 and _check_and_set_square_completion(row, col-1))
         elif direction == 'right':
             # Check squares either side of the horizontal line
             repeat = _check_and_set_square_completion(row, col) or \
-                _check_and_set_square_completion(row-1, col)
+                (row > 0 and _check_and_set_square_completion(row-1, col))
 
         return ({"success": True, "placed": 1, "position": position}, repeat)
 
@@ -628,17 +688,19 @@ class Squares(CompetitiveGame):
 
         # Display the board as a series of dots for empty cells
         # And lines for placed lines
+        description += "   " + "    ".join([str(i) for i in range(self.num_squares + 1)]) + "\n"
         for i in range(self.num_squares + 1):
+            description += f"{i}  "
             for j in range(self.num_squares + 1):
                 description += "."
                 if board.get((i, j, 'right'), 0) == 1:
                     description += " -- "
                 else:
                     description += "    "
-            description += "\n"
+            description += "\n   "
             for j in range(self.num_squares + 1):
                 if board.get((i, j, 'down'), 0) == 1:
-                    description += "|   "
+                    description += "|    "
                 else:
                     description += "    "
             description += "\n"
@@ -651,10 +713,11 @@ class Squares(CompetitiveGame):
 
     def get_player_perspective(self, player_name: str) -> Dict[str, Any]:
         """Get game state from specific player's perspective"""
-        state = self.state
-        state.board = {f"{k[0]},{k[1]},{k[2]}": v for k, v in state.board.items()}
-        state.boxes = {f"{k[0]},{k[1]}": v for k, v in state.boxes.items()}
-        return state
+        state = GameState()
+        state.board = {f"{k[0]},{k[1]},{k[2]}": v for k, v in self.state.board.items()}
+        state.boxes = {f"{k[0]},{k[1]}": v for k, v in self.state.boxes.items()}
+        return state.to_dict()
+
 
 games = {
     "tic_tac_toe": TicTacToe,
@@ -676,48 +739,31 @@ def play_game(mode: str = "human", game_class: CompetitiveGame = TicTacToe):
         skill_level = "intermediate"
 
     # Add players
-    player1 = Player("Claude", "claude", strategy=strategy, stats={"skill_level": skill_level})
     if mode == "human":
-        player2 = Player("Human", "human")
-    else:
-        player2 = Player("Claude2", "claude", strategy=strategy, stats={"skill_level": skill_level})
+        session.add_player('Human', 'human')
+    elif mode == "auto":
+        session.add_player('ClaudeOpp', player_type='claude', strategy=strategy, skill_level=skill_level)
 
-    session.add_player(player1)
-    session.add_player(player2)
+    session.add_player(name='Claude', player_type='claude', strategy=strategy, skill_level=skill_level)
 
     session.start_game()
+    players = list(session.players.values())
 
-    print(f"=== {player1.name} vs {player2.name} ===")
+    print(f"=== {players[0].name} vs {players[1].name} ===")
     print("Enter moves as game.get_move_description().")
-    print(game.get_game_description())
 
     while game.state.phase == GamePhase.PLAYING:
         current_player = game.state.current_player
 
-        if session.players[current_player].type == "human":
-            # Human turn
-            try:
-                pos_input = input(f"{current_player}, enter your move (row,col): ").strip()
-                row, col = map(int, pos_input.split(","))
-                human_move = GameMove(current_player, "place", {"position": f"{row},{col}"})
-                result = session.play_turn(human_move)
-            except (ValueError, KeyError):
-                print("Invalid input! Use format: row,col (e.g., 1,1)")
-                continue
-        else:
-            # Claude turn
+        try:
             print(f"{current_player} is thinking...")
             result = session.play_turn()
-
-        if result.get("error"):
-            print(f"Error: {result['error']}")
+        except Exception as e:
+            print(f"Error during turn: {e}")
             continue
 
-        print(f"\n{result['player']} played: {result['move']['data']['position']}")
-        print(game.get_game_description())
-
-        if result.get("game_over"):
-            winner = result.get("winner", {}).get("winner")
+        if result[-1].get("game_over"):
+            winner = result[-1].get("winner", {}).get("winner")
             if winner:
                 print(f"\n🎉 {winner} wins!")
             else:
